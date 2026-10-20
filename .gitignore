@@ -1,0 +1,17 @@
+/vendor/
+/node_modules/
+/.phpunit.result.cache
+/coverage/
+/build/
+/dist/
+/.tools/
+composer.phar
+wp-cli.phar
+*.zip
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+.idea/
+.vscode/

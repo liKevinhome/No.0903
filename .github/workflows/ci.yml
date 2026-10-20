@@ -1,0 +1,130 @@
+name: LocalePilot QA & Self-Contained Package Verification
+
+on:
+  push:
+    branches: [ main, master, "feature/**", "fix/**" ]
+  pull_request:
+
+jobs:
+  php-lint-and-unit:
+    name: PHP ${{ matrix.php }} Lint, PHPCS & PHPUnit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: [ "7.4", "8.0", "8.1", "8.2", "8.3" ]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: mbstring, json, dom, xml, curl, mysqli
+          tools: composer:v2
+          coverage: none
+
+      - name: Run PHP syntax check (php -l)
+        run: |
+          for f in localepilot.php uninstall.php includes/*.php includes/Admin/*.php includes/Storefront/*.php includes/Translation/*.php includes/Translation/Providers/*.php tests/bootstrap.php tests/Unit/*.php; do
+            php -l "$f"
+          done
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      - name: Install development QA dependencies (PHPCS & PHPUnit)
+        run: composer install --no-interaction --prefer-dist
+
+      - name: Run WordPress/WooCommerce Coding Standards (PHPCS)
+        run: composer lint
+
+      - name: Run Real PHPUnit Test Suite
+        run: composer test
+
+  wp-wc-hpos-matrix:
+    name: Marketplace Matrix (WP ${{ matrix.wp_track }} x WC ${{ matrix.wc_track }})
+    runs-on: ubuntu-latest
+    needs: php-lint-and-unit
+    strategy:
+      fail-fast: false
+      matrix:
+        wp_track: [ "latest", "previous-major" ]
+        wc_track: [ "latest", "previous-major" ]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build self-contained plugin ZIP via .distignore
+        shell: pwsh
+        run: ./bin/build-dist-zip.ps1
+
+      - name: Resolve dynamic WordPress & WooCommerce versions from official WordPress.org APIs
+        id: resolve_versions
+        run: |
+          WP_VER=$(php -r '
+            $data = json_decode(file_get_contents("https://api.wordpress.org/core/version-check/1.7/"), true);
+            $offers = $data["offers"] ?? [];
+            $latest = $offers[0]["version"] ?? "";
+            if ("${{ matrix.wp_track }}" === "latest") { echo $latest; exit(0); }
+            $latest_major = explode(".", $latest)[0] . "." . explode(".", $latest)[1];
+            foreach ($offers as $o) {
+              $v = $o["version"] ?? "";
+              $m = explode(".", $v)[0] . "." . (explode(".", $v)[1] ?? "");
+              if ($v && $m !== $latest_major) { echo $v; exit(0); }
+            }
+            echo $latest;
+          ')
+          WC_VER=$(php -r '
+            $data = json_decode(file_get_contents("https://api.wordpress.org/plugins/info/1.0/woocommerce.json"), true);
+            $latest = $data["version"] ?? "";
+            if ("${{ matrix.wc_track }}" === "latest") { echo $latest; exit(0); }
+            $latest_major = explode(".", $latest)[0] . "." . explode(".", $latest)[1];
+            $versions = array_keys($data["versions"] ?? []);
+            rsort($versions, SORT_NATURAL);
+            foreach ($versions as $v) {
+              if (strpos($v, "rc") !== false || strpos($v, "beta") !== false || $v === "trunk") continue;
+              $m = explode(".", $v)[0] . "." . (explode(".", $v)[1] ?? "");
+              if ($m !== $latest_major) { echo $v; exit(0); }
+            }
+            echo $latest;
+          ')
+          echo "wp_version=$WP_VER" >> "$GITHUB_OUTPUT"
+          echo "wc_version=$WC_VER" >> "$GITHUB_OUTPUT"
+          echo "Resolved WP=$WP_VER, WC=$WC_VER"
+
+      - name: Start isolated WordPress + MariaDB Compose stack
+        run: docker compose -p localepilot-dev-test up -d db wordpress
+
+      - name: Install resolved WP ${{ steps.resolve_versions.outputs.wp_version }} & WC ${{ steps.resolve_versions.outputs.wc_version }} (HPOS) and verify ZIP
+        run: |
+          docker compose -p localepilot-dev-test run --rm wpcli wp core download --version="${{ steps.resolve_versions.outputs.wp_version }}" --force
+          docker compose -p localepilot-dev-test run --rm wpcli wp core install \
+            --url="http://127.0.0.1:18088" \
+            --title="LocalePilot Isolated Test Store" \
+            --admin_user="admin" \
+            --admin_password="dev_only_password" \
+            --admin_email="admin@example.com" \
+            --skip-email
+          docker compose -p localepilot-dev-test run --rm wpcli wp plugin install woocommerce --version="${{ steps.resolve_versions.outputs.wc_version }}" --activate
+          docker compose -p localepilot-dev-test run --rm wpcli wp option update woocommerce_custom_orders_table_enabled yes
+          docker compose -p localepilot-dev-test run --rm wpcli wp plugin install /opt/localepilot-dist/localepilot.zip --activate
+          docker compose -p localepilot-dev-test run --rm wpcli wp eval '
+            if ( ! function_exists( "localepilot" ) || ! localepilot()->is_booted() ) {
+              fwrite( STDERR, "LocalePilot failed to boot in WooCommerce HPOS environment.\n" );
+              exit( 1 );
+            }
+            $matrix = \LocalePilot\Compatibility::get_feature_matrix();
+            if ( true !== ( $matrix["custom_order_tables"] ?? null ) || true !== ( $matrix["cart_checkout_blocks"] ?? null ) ) {
+              fwrite( STDERR, "Unexpected WooCommerce feature compatibility matrix.\n" );
+              exit( 1 );
+            }
+            echo "VERIFIED_BOOT_AND_HPOS_BLOCKS_MATRIX\n";
+          '
+          docker compose -p localepilot-dev-test run --rm wpcli wp plugin deactivate localepilot
+          docker compose -p localepilot-dev-test run --rm wpcli wp plugin delete localepilot
+
+      - name: Stop isolated containers without deleting external resources
+        if: always()
+        run: docker compose -p localepilot-dev-test down -v

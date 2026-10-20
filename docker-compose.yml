@@ -1,0 +1,71 @@
+name: localepilot-dev-test
+
+services:
+  db:
+    image: mariadb:10.11
+    restart: "no"
+    environment:
+      MYSQL_DATABASE: localepilot_wp_test
+      MYSQL_USER: localepilot_wp_user
+      MYSQL_PASSWORD: localepilot_wp_dev_only_password
+      MYSQL_ROOT_PASSWORD: localepilot_root_dev_only_password
+    volumes:
+      - localepilot_test_db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  wordpress:
+    image: wordpress:6.6-php8.2-apache
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${LOCALEPILOT_WP_PORT:-18088}:80"
+    environment:
+      WORDPRESS_DB_HOST: db:3306
+      WORDPRESS_DB_USER: localepilot_wp_user
+      WORDPRESS_DB_PASSWORD: localepilot_wp_dev_only_password
+      WORDPRESS_DB_NAME: localepilot_wp_test
+      WORDPRESS_DEBUG: "1"
+    volumes:
+      - localepilot_test_wp_data:/var/www/html
+      - ./dist:/opt/localepilot-dist:ro
+
+  wpcli:
+    image: wordpress:cli-php8.2
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+      wordpress:
+        condition: service_started
+    user: "33:33"
+    environment:
+      WORDPRESS_DB_HOST: db:3306
+      WORDPRESS_DB_USER: localepilot_wp_user
+      WORDPRESS_DB_PASSWORD: localepilot_wp_dev_only_password
+      WORDPRESS_DB_NAME: localepilot_wp_test
+    volumes:
+      - localepilot_test_wp_data:/var/www/html
+      - ./dist:/opt/localepilot-dist:ro
+    profiles:
+      - tools
+
+  phpqa:
+    image: composer:2
+    restart: "no"
+    working_dir: /app
+    volumes:
+      - ./:/app
+    profiles:
+      - qa
+
+volumes:
+  localepilot_test_db_data:
+    name: localepilot_dev_test_db_data
+  localepilot_test_wp_data:
+    name: localepilot_dev_test_wp_data

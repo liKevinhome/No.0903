@@ -1,0 +1,36 @@
+{
+  "name": "localepilot/localepilot",
+  "description": "Development and CI test configuration for LocalePilot (runtime plugin does not require Composer on merchant servers).",
+  "type": "wordpress-plugin",
+  "license": "GPL-3.0-or-later",
+  "require": {
+    "php": ">=7.4"
+  },
+  "require-dev": {
+    "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
+    "phpcompatibility/phpcompatibility-wp": "^2.1",
+    "phpunit/phpunit": "^9.6",
+    "woocommerce/woocommerce-sniffs": "^1.0",
+    "wp-coding-standards/wpcs": "^3.1",
+    "yoast/phpunit-polyfills": "^2.0"
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "LocalePilot\\Tests\\": "tests/"
+    }
+  },
+  "config": {
+    "allow-plugins": {
+      "dealerdirect/phpcodesniffer-composer-installer": true
+    },
+    "sort-packages": true
+  },
+  "scripts": {
+    "lint": "phpcs --standard=phpcs.xml.dist",
+    "test": "phpunit --configuration phpunit.xml.dist",
+    "check": [
+      "@lint",
+      "@test"
+    ]
+  }
+}
